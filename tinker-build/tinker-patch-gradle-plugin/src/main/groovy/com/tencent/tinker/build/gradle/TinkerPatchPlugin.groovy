@@ -20,6 +20,7 @@ import com.tencent.tinker.build.gradle.extension.*
 import com.tencent.tinker.build.gradle.task.*
 import com.tencent.tinker.build.util.FileOperation
 import com.tencent.tinker.build.util.TypedValue
+import com.tencent.tinker.build.util.Utils
 import org.gradle.api.GradleException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -57,24 +58,24 @@ class TinkerPatchPlugin implements Plugin<Project> {
             throw new GradleException('generateTinkerApk: Android Application plugin required')
         }
 
+        def android = project.extensions.android
+
+        //open jumboMode
+        android.dexOptions.jumboMode = true
+
+        //close preDexLibraries
+        try {
+            android.dexOptions.preDexLibraries = false
+        } catch (Throwable e) {
+            //no preDexLibraries field, just continue
+        }
+
         project.afterEvaluate {
             def configuration = project.tinkerPatch
 
             if (!configuration.tinkerEnable) {
                 project.logger.error("tinker tasks are disabled.")
                 return
-            }
-
-            def android = project.extensions.android
-
-            //open jumboMode
-            android.dexOptions.jumboMode = true
-
-            //close preDexLibraries
-            try {
-                android.dexOptions.preDexLibraries = false
-            } catch (Throwable e) {
-                //no preDexLibraries field, just continue
             }
 
             project.logger.error("----------------------tinker build warning ------------------------------------")
@@ -126,14 +127,12 @@ class TinkerPatchPlugin implements Plugin<Project> {
                 }
 
                 TinkerPatchSchemaTask tinkerPatchBuildTask = project.tasks.create("tinkerPatch${variantName}", TinkerPatchSchemaTask)
-                tinkerPatchBuildTask.dependsOn variant.assemble
 
                 tinkerPatchBuildTask.signConfig = variant.apkVariantData.variantConfiguration.signingConfig
 
                 variant.outputs.each { output ->
-                    tinkerPatchBuildTask.buildApkPath = output.outputFile
-                    File parentFile = output.outputFile
-                    tinkerPatchBuildTask.outputFolder = "${parentFile.getParentFile().getParentFile().getAbsolutePath()}/" + TypedValue.PATH_DEFAULT_OUTPUT + "/" + variant.dirName
+                    setPatchNewApkPath(configuration, output, variant, tinkerPatchBuildTask)
+                    setPatchOutputFolder(configuration, output, variant, tinkerPatchBuildTask)
                 }
 
                 // Create a task to add a build TINKER_ID to AndroidManifest.xml
@@ -192,6 +191,49 @@ class TinkerPatchPlugin implements Plugin<Project> {
                 }
             }
         }
+    }
+
+    /**
+     * Specify the output folder of tinker patch result.
+     *
+     * @param configuration the tinker configuration 'tinkerPatch'
+     * @param output the output of assemble result
+     * @param variant the variant
+     * @param tinkerPatchBuildTask the task that tinker patch uses
+     */
+    void setPatchOutputFolder(configuration, output, variant, tinkerPatchBuildTask) {
+        File parentFile = output.outputFile
+        String outputFolder = "${configuration.outputFolder}";
+        if (!Utils.isNullOrNil(outputFolder)) {
+            outputFolder = "${outputFolder}/${TypedValue.PATH_DEFAULT_OUTPUT}/${variant.dirName}"
+        } else {
+            outputFolder =
+                    "${parentFile.getParentFile().getParentFile().getAbsolutePath()}/${TypedValue.PATH_DEFAULT_OUTPUT}/${variant.dirName}"
+        }
+        tinkerPatchBuildTask.outputFolder = outputFolder
+    }
+
+    /**
+     * Specify the new apk path. If the new apk file is specified by {@code tinkerPatch.buildConfig.newApk},
+     * just use it as the new apk input for tinker patch, otherwise use the assemble output.
+     *
+     * @param project the project which applies this plugin
+     * @param configuration the tinker configuration 'tinkerPatch'
+     * @param output the output of assemble result
+     * @param variant the variant
+     * @param tinkerPatchBuildTask the task that tinker patch uses
+     */
+    void setPatchNewApkPath(configuration, output, variant, tinkerPatchBuildTask) {
+        def newApkPath = configuration.newApk;
+        if (!Utils.isNullOrNil(newApkPath)) {
+            if (FileOperation.isLegalFile(newApkPath)) {
+                tinkerPatchBuildTask.buildApkPath = newApkPath
+                return
+            }
+        }
+
+        tinkerPatchBuildTask.buildApkPath = output.outputFile
+        tinkerPatchBuildTask.dependsOn variant.assemble
     }
 
     Task getMultiDexTask(Project project, String variantName) {

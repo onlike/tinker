@@ -53,7 +53,6 @@ public class TinkerDexLoader {
     private static final ArrayList<ShareDexDiffPatchInfo> dexList = new ArrayList<>();
 
 
-
     private static File testOptDexFile;
 
     private TinkerDexLoader() {
@@ -183,7 +182,6 @@ public class TinkerDexLoader {
      * all the dex files in meta file exist?
      * fast check, only check whether exist
      *
-     * @param directory
      * @return boolean
      */
     public static boolean checkComplete(String directory, ShareSecurityCheck securityCheck, String oatDir, Intent intentResult) {

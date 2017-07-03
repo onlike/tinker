@@ -142,15 +142,22 @@ class TinkerResourcePatcher {
         if (references == null) {
             throw new IllegalStateException("resource references is null");
         }
-        try {
+        // fix jianGuo pro has private field 'mAssets' with Resource
+        // try use mResourcesImpl first
+        if (SDK_INT >= 24) {
+            try {
+                // N moved the mAssets inside an mResourcesImpl field
+                resourcesImplFiled = Resources.class.getDeclaredField("mResourcesImpl");
+                resourcesImplFiled.setAccessible(true);
+            } catch (Throwable ignore) {
+                // for safety
+                assetsFiled = Resources.class.getDeclaredField("mAssets");
+                assetsFiled.setAccessible(true);
+            }
+        } else {
             assetsFiled = Resources.class.getDeclaredField("mAssets");
             assetsFiled.setAccessible(true);
-        } catch (Throwable ignore) {
-            // N moved the mAssets inside an mResourcesImpl field
-            resourcesImplFiled = Resources.class.getDeclaredField("mResourcesImpl");
-            resourcesImplFiled.setAccessible(true);
         }
-
 //        final Resources resources = context.getResources();
 //        isMiuiSystem = resources != null && MIUI_RESOURCE_CLASSNAME.equals(resources.getClass().getName());
 
@@ -265,12 +272,12 @@ class TinkerResourcePatcher {
 
     private static boolean checkResUpdate(Context context) {
         try {
-            Log.e(TAG, "checkResUpdate success, found test resource assets file " + TEST_ASSETS_VALUE);
             context.getAssets().open(TEST_ASSETS_VALUE);
         } catch (Throwable e) {
             Log.e(TAG, "checkResUpdate failed, can't find test resource assets file " + TEST_ASSETS_VALUE + " e:" + e.getMessage());
             return false;
         }
+        Log.i(TAG, "checkResUpdate success, found test resource assets file " + TEST_ASSETS_VALUE);
         return true;
     }
 }

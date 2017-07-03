@@ -32,8 +32,13 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.ListIterator;
+import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.zip.ZipFile;
 
 import dalvik.system.DexFile;
@@ -54,8 +59,9 @@ public class SystemClassLoaderAdder {
         Log.i(TAG, "installDexes dexOptDir: " + dexOptDir.getAbsolutePath() + ", dex size:" + files.size());
 
         if (!files.isEmpty()) {
+            files = createSortedAdditionalPathEntries(files);
             ClassLoader classLoader = loader;
-            if (Build.VERSION.SDK_INT >= 24) {
+            if (Build.VERSION.SDK_INT >= 24 && !checkIsProtectedApp(files)) {
                 classLoader = AndroidNClassLoader.inject(loader, application);
             }
             //because in dalvik, if inner class is not the same classloader with it wrapper class.
@@ -106,6 +112,78 @@ public class SystemClassLoaderAdder {
         boolean isPatch = (boolean) filed.get(null);
         Log.w(TAG, "checkDexInstall result:" + isPatch);
         return isPatch;
+    }
+
+    private static boolean checkIsProtectedApp(List<File> files) {
+        if (!files.isEmpty()) {
+            for (File file : files) {
+                if (file == null) {
+                    continue;
+                }
+                if (file.getName().startsWith(ShareConstants.CHANGED_CLASSES_DEX_NAME)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static List<File> createSortedAdditionalPathEntries(List<File> additionalPathEntries) {
+        final List<File> result = new ArrayList<>(additionalPathEntries);
+
+        final Pattern classNPattern = Pattern.compile("classes(?:[2-9]{0,1}|[1-9][0-9]+)\\.dex");
+        final Map<String, Boolean> matchesClassNPatternMemo = new HashMap<>();
+        for (File file : result) {
+            final String name = file.getName();
+            matchesClassNPatternMemo.put(name, classNPattern.matcher(name).matches());
+        }
+        Collections.sort(result, new Comparator<File>() {
+            @Override
+            public int compare(File lhs, File rhs) {
+                if (lhs == null && rhs == null) {
+                    return 0;
+                }
+                if (lhs == null) {
+                    return -1;
+                }
+                if (rhs == null) {
+                    return 1;
+                }
+
+                final String lhsName = lhs.getName();
+                final String rhsName = rhs.getName();
+                if (lhsName.equals(rhsName)) {
+                    return 0;
+                }
+
+                final String testDexSuffix = ShareConstants.TEST_DEX_NAME;
+                // test.dex should always be at tail.
+                if (lhsName.startsWith(testDexSuffix)) {
+                    return 1;
+                }
+                if (rhsName.startsWith(testDexSuffix)) {
+                    return -1;
+                }
+
+                final boolean isLhsNameMatchClassN = matchesClassNPatternMemo.get(lhsName);
+                final boolean isRhsNameMatchClassN = matchesClassNPatternMemo.get(rhsName);
+                if (isLhsNameMatchClassN && isRhsNameMatchClassN) {
+                    final int lhsDotPos = lhsName.lastIndexOf('.');
+                    final int rhsDotPos = rhsName.lastIndexOf('.');
+                    final int lhsId = (lhsDotPos > 7 ? Integer.parseInt(lhsName.substring(7, lhsDotPos)) : 1);
+                    final int rhsId = (rhsDotPos > 7 ? Integer.parseInt(rhsName.substring(7, rhsDotPos)) : 1);
+                    return (lhsId == rhsId ? 0 : (lhsId < rhsId ? -1 : 1));
+                } else if (isLhsNameMatchClassN) {
+                    // Dex name that matches class N rules should always be at first.
+                    return -1;
+                } else if (isRhsNameMatchClassN) {
+                    return 1;
+                }
+                return lhsName.compareTo(rhsName);
+            }
+        });
+
+        return result;
     }
 
     /**

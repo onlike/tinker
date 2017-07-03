@@ -20,16 +20,12 @@ import android.annotation.TargetApi;
 import android.app.Application;
 import android.content.Context;
 import android.os.Build;
-import android.text.TextUtils;
-import android.util.Log;
 
 import com.tencent.tinker.loader.shareutil.ShareReflectUtil;
 
 import java.io.File;
-import java.io.IOException;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.List;
 
 import dalvik.system.DexFile;
@@ -42,9 +38,6 @@ import dalvik.system.PathClassLoader;
 class AndroidNClassLoader extends PathClassLoader {
     private static final String TAG = "Tinker.NClassLoader";
 
-    private static final String CHECK_CLASSLOADER_CLASS = "com.tencent.tinker.loader.TinkerTestAndroidNClassLoader";
-
-    private static ArrayList<DexFile> oldDexFiles = new ArrayList<>();
     private final PathClassLoader originClassLoader;
     private String applicationClassName;
 
@@ -57,44 +50,66 @@ class AndroidNClassLoader extends PathClassLoader {
         }
     }
 
-    private static AndroidNClassLoader createAndroidNClassLoader(PathClassLoader original, Application application) throws Exception {
-        //let all element ""
-        AndroidNClassLoader androidNClassLoader = new AndroidNClassLoader("",  original, application);
-        Field originPathList = ShareReflectUtil.findField(original, "pathList");
-        Object originPathListObject = originPathList.get(original);
-        //should reflect definingContext also
-        Field originClassloader = ShareReflectUtil.findField(originPathListObject, "definingContext");
-        originClassloader.set(originPathListObject, androidNClassLoader);
-        //copy pathList
-        Field pathListField = ShareReflectUtil.findField(androidNClassLoader, "pathList");
-        //just use PathClassloader's pathList
-        pathListField.set(androidNClassLoader, originPathListObject);
+    @SuppressWarnings("unchecked")
+    private static Object recreateDexPathList(Object originalDexPathList, ClassLoader newDefiningContext) throws Exception {
+        final Field dexElementsField = ShareReflectUtil.findField(originalDexPathList, "dexElements");
+        final Object[] dexElements = (Object[]) dexElementsField.get(originalDexPathList);
+        final Field nativeLibraryDirectoriesField = ShareReflectUtil.findField(originalDexPathList, "nativeLibraryDirectories");
+        final List<File> nativeLibraryDirectories = (List<File>) nativeLibraryDirectoriesField.get(originalDexPathList);
 
-        //we must recreate dexFile due to dexCache
-        List<File> additionalClassPathEntries = new ArrayList<>();
-        Field dexElement = ShareReflectUtil.findField(originPathListObject, "dexElements");
-        Object[] originDexElements = (Object[]) dexElement.get(originPathListObject);
-        for (Object element : originDexElements) {
-            DexFile dexFile = (DexFile) ShareReflectUtil.findField(element, "dexFile").get(element);
+        final StringBuilder dexPathBuilder = new StringBuilder();
+        final Field dexFileField = ShareReflectUtil.findField(dexElements.getClass().getComponentType(), "dexFile");
+
+        boolean isFirstItem = true;
+        for (Object dexElement : dexElements) {
+            final DexFile dexFile = (DexFile) dexFileField.get(dexElement);
             if (dexFile == null) {
                 continue;
             }
-            additionalClassPathEntries.add(new File(dexFile.getName()));
-            //protect for java.lang.AssertionError: Failed to close dex file in finalizer.
-            oldDexFiles.add(dexFile);
+            if (isFirstItem) {
+                isFirstItem = false;
+            } else {
+                dexPathBuilder.append(File.pathSeparator);
+            }
+            dexPathBuilder.append(dexFile.getName());
         }
-        Method makePathElements = ShareReflectUtil.findMethod(originPathListObject, "makePathElements", List.class, File.class,
-            List.class);
-        ArrayList<IOException> suppressedExceptions = new ArrayList<>();
-        Object[] newDexElements = (Object[]) makePathElements.invoke(originPathListObject, additionalClassPathEntries, null, suppressedExceptions);
-        dexElement.set(originPathListObject, newDexElements);
 
-        try {
-            Class.forName(CHECK_CLASSLOADER_CLASS, true, androidNClassLoader);
-        } catch (Throwable thr) {
-            Log.e(TAG, "load TinkerTestAndroidNClassLoader fail, try to fixDexElementsForProtectedApp");
-            fixDexElementsForProtectedApp(application, newDexElements);
+        final String dexPath = dexPathBuilder.toString();
+
+        final StringBuilder libraryPathBuilder = new StringBuilder();
+        isFirstItem = true;
+        for (File libDir : nativeLibraryDirectories) {
+            if (libDir == null) {
+                continue;
+            }
+            if (isFirstItem) {
+                isFirstItem = false;
+            } else {
+                libraryPathBuilder.append(File.pathSeparator);
+            }
+            libraryPathBuilder.append(libDir.getAbsolutePath());
         }
+
+        final String libraryPath = libraryPathBuilder.toString();
+
+        final Constructor<?> dexPathListConstructor = ShareReflectUtil.findConstructor(originalDexPathList, ClassLoader.class, String.class, String.class, File.class);
+        return dexPathListConstructor.newInstance(newDefiningContext, dexPath, libraryPath, null);
+    }
+
+    private static AndroidNClassLoader createAndroidNClassLoader(PathClassLoader originalClassLoader, Application application) throws Exception {
+        //let all element ""
+        final AndroidNClassLoader androidNClassLoader = new AndroidNClassLoader("",  originalClassLoader, application);
+        final Field pathListField = ShareReflectUtil.findField(originalClassLoader, "pathList");
+        final Object originPathList = pathListField.get(originalClassLoader);
+
+        // To avoid 'dex file register with multiple classloader' exception on Android O, we must keep old
+        // dexPathList in original classloader so that after the newly loaded base dex was bound to
+        // AndroidNClassLoader we can still load class in base dex from original classloader.
+
+        Object newPathList = recreateDexPathList(originPathList, androidNClassLoader);
+
+        // Update new classloader's pathList.
+        pathListField.set(androidNClassLoader, newPathList);
 
         return androidNClassLoader;
     }
@@ -117,47 +132,6 @@ class AndroidNClassLoader extends PathClassLoader {
         return classLoader;
     }
 
-    // Basically this method would use base.apk to create a dummy DexFile object,
-    // then set its fileName, cookie, internalCookie field to the value
-    // comes from original DexFile object so that the encrypted dex would be taking effect.
-    private static void fixDexElementsForProtectedApp(Application application, Object[] newDexElements) throws Exception {
-        Field zipField = null;
-        Field dexFileField = null;
-        final Field mFileNameField = ShareReflectUtil.findField(DexFile.class, "mFileName");
-        final Field mCookieField = ShareReflectUtil.findField(DexFile.class, "mCookie");
-        final Field mInternalCookieField = ShareReflectUtil.findField(DexFile.class, "mInternalCookie");
-
-        // Always ignore the last element since it should always be the base.apk.
-        for (int i = 0; i < newDexElements.length - 1; ++i) {
-            final Object newElement = newDexElements[i];
-
-            if (zipField == null && dexFileField == null) {
-                zipField = ShareReflectUtil.findField(newElement, "zip");
-                dexFileField = ShareReflectUtil.findField(newElement, "dexFile");
-            }
-
-            final DexFile origDexFile = oldDexFiles.get(i);
-            final String origFileName = (String) mFileNameField.get(origDexFile);
-            final Object origCookie = mCookieField.get(origDexFile);
-            final Object origInternalCookie = mInternalCookieField.get(origDexFile);
-
-            final DexFile dupOrigDexFile = DexFile.loadDex(application.getApplicationInfo().sourceDir, null, 0);
-            mFileNameField.set(dupOrigDexFile, origFileName);
-            mCookieField.set(dupOrigDexFile, origCookie);
-            mInternalCookieField.set(dupOrigDexFile, origInternalCookie);
-
-            dexFileField.set(newElement, dupOrigDexFile);
-
-            // Just for better looking when dump new classloader.
-            // Avoid such output like this: DexPathList{zip file: /xx/yy/zz/uu.odex}
-            final File newZip = (File) zipField.get(newElement);
-            final String newZipPath = (newZip != null ? newZip.getAbsolutePath() : null);
-            if (newZipPath != null && !newZipPath.endsWith(".zip") && !newZipPath.endsWith(".jar") && !newZipPath.endsWith(".apk")) {
-                zipField.set(newElement, null);
-            }
-        }
-    }
-
 //    public static String getLdLibraryPath(ClassLoader loader) throws Exception {
 //        String nativeLibraryPath;
 //
@@ -172,9 +146,8 @@ class AndroidNClassLoader extends PathClassLoader {
         // loader class use default pathClassloader to load
         if ((name != null
                 && name.startsWith("com.tencent.tinker.loader.")
-                && !name.equals(SystemClassLoaderAdder.CHECK_DEX_CLASS)
-                && !name.equals(CHECK_CLASSLOADER_CLASS))
-                || (applicationClassName != null && TextUtils.equals(applicationClassName, name))) {
+                && !name.equals(SystemClassLoaderAdder.CHECK_DEX_CLASS))
+                || (applicationClassName != null && applicationClassName.equals(name))) {
             return originClassLoader.loadClass(name);
         }
         return super.findClass(name);

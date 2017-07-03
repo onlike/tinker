@@ -20,7 +20,7 @@ package com.tencent.tinker.loader.shareutil;
  * Created by zhangshaowen on 16/3/24.
  */
 public class ShareConstants {
-    public static final String TINKER_VERSION = "1.7.8";
+    public static final String TINKER_VERSION = "1.7.11";
 
     public static final int BUFFER_SIZE         = 16384;
     public static final int MD5_LENGTH          = 32;
@@ -53,6 +53,8 @@ public class ShareConstants {
     public static final String JAR_SUFFIX = ".jar";
 
     public static final String TEST_DEX_NAME = "test.dex";
+    public static final String CHANGED_CLASSES_DEX_NAME = "changed_classes.dex";
+
 
     public static final String CHECK_DEX_INSTALL_FAIL = "checkDexInstall failed";
     public static final String CHECK_RES_INSTALL_FAIL = "checkResInstall failed";

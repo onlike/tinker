@@ -42,6 +42,7 @@ import org.jf.dexlib2.dexbacked.DexBackedDexFile;
 import org.jf.dexlib2.iface.DexFile;
 import org.jf.dexlib2.iface.Field;
 import org.jf.dexlib2.iface.Method;
+import org.jf.dexlib2.iface.MethodImplementation;
 import org.jf.dexlib2.writer.builder.BuilderField;
 import org.jf.dexlib2.writer.builder.BuilderMethod;
 import org.jf.dexlib2.writer.builder.DexBuilder;
@@ -230,18 +231,24 @@ public class DexDiffDecoder extends BaseDecoder {
 
         Set<DexClassInfo> classInfosInChangedClassesDex = collector.doCollect(oldDexGroup, newDexGroup);
 
-        Set<String> descsOfClassInChangedClassesDex = new HashSet<>();
         Set<Dex> owners = new HashSet<>();
+        Map<Dex, Set<String>> ownerToDescOfChangedClassesMap = new HashMap<>();
         for (DexClassInfo classInfo : classInfosInChangedClassesDex) {
-            descsOfClassInChangedClassesDex.add(classInfo.classDesc);
             owners.add(classInfo.owner);
+            Set<String> descOfChangedClasses = ownerToDescOfChangedClassesMap.get(classInfo.owner);
+            if (descOfChangedClasses == null) {
+                descOfChangedClasses = new HashSet<>();
+                ownerToDescOfChangedClassesMap.put(classInfo.owner, descOfChangedClasses);
+            }
+            descOfChangedClasses.add(classInfo.classDesc);
         }
 
         DexBuilder dexBuilder = DexBuilder.makeDexBuilder();
         for (Dex dex : owners) {
+            Set<String> descOfChangedClassesInCurrDex = ownerToDescOfChangedClassesMap.get(dex);
             DexFile dexFile = new DexBackedDexFile(org.jf.dexlib2.Opcodes.forApi(20), dex.getBytes());
             for (org.jf.dexlib2.iface.ClassDef classDef : dexFile.getClasses()) {
-                if (!descsOfClassInChangedClassesDex.contains(classDef.getType())) {
+                if (!descOfChangedClassesInCurrDex.contains(classDef.getType())) {
                     continue;
                 }
 
@@ -262,6 +269,10 @@ public class DexDiffDecoder extends BaseDecoder {
                 List<BuilderMethod> builderMethods = new ArrayList<>();
 
                 for (Method method : classDef.getMethods()) {
+                    MethodImplementation methodImpl = method.getImplementation();
+                    if (methodImpl != null) {
+                        methodImpl = new BuilderMutableMethodImplementation(dexBuilder, methodImpl);
+                    }
                     BuilderMethod builderMethod = dexBuilder.internMethod(
                             method.getDefiningClass(),
                             method.getName(),
@@ -269,7 +280,7 @@ public class DexDiffDecoder extends BaseDecoder {
                             method.getReturnType(),
                             method.getAccessFlags(),
                             method.getAnnotations(),
-                            new BuilderMutableMethodImplementation(dexBuilder, method.getImplementation())
+                            methodImpl
                     );
                     builderMethods.add(builderMethod);
                 }
